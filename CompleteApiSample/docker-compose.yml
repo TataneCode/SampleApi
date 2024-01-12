@@ -1,0 +1,133 @@
+version: '3.4'
+
+services:
+  # Jaeger
+  jaeger:
+    container_name: sample-jaeger
+    image: jaegertracing/all-in-one
+    ports:
+      - "16686:16686"
+      - "14250"
+ 
+  # Prometheus for metrics
+  prometheus:
+    container_name: sample-prometheus
+    image: prom/prometheus:latest
+    restart: always
+    volumes:
+      - ./collector/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - metrics-data:/prometheus 
+    ports:
+      - "9090:9090"
+
+  # Collector
+  otel-collector:
+    container_name: sample-otel
+    restart: always
+    image: otel/opentelemetry-collector-contrib
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter metrics
+  
+  # Loki
+  loki:
+    image: grafana/loki:latest
+    container_name: sample-loki
+    restart: always
+    volumes:
+      - ./collector/loki-config.yaml/:/etc/loki/local-config.yaml
+      - loki-data:/loki 
+    ports:
+      - 3100:3100
+      - 9095:9095
+    command: -config.file=/etc/loki/local-config.yaml
+  
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sample-grafana
+    restart: always
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources
+        cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
+        apiVersion: 1
+        datasources:
+        - name: loki-ninja
+          type: loki
+          access: proxy 
+          orgId: 1
+          url: http://host.docker.internal:3100
+          basicAuth: false
+          isDefault: true
+          version: 1
+          editable: true
+        - name: prometheus-ninja
+          type: prometheus
+          access: proxy 
+          url: http://host.docker.internal:9090
+          basicAuth: false
+          isDefault: false
+          editable: true
+        - name: jaeger-ninja
+          type: jaeger
+          url: http://host.docker.internal:16686
+          access: proxy
+          basicAuth: false
+          readOnly: false
+          isDefault: false
+          editable: true
+        EOF
+        /run.sh
+    ports:
+      - "3000:3000"
+
+  # API
+  completeapisample:
+    container_name: library-api
+    image: ${DOCKER_REGISTRY-}completeapisample
+    build:
+      context: .
+      dockerfile: CompleteApiSample/Dockerfile
+    ports:
+      - "9080:80"
+      - "9043:443"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=https://+:443;http://+:80
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317
+      - OTEL_RESOURCE_ATTRIBUTES=deployed.environment=dev,service.name=library,service.namespace=local
+      - CONNECTION_STRING=Host=db;Database=library;
+      - PGUSER=postgres
+      - PGPASSWORD=Azerty123!!!
+    volumes:
+      - ${APPDATA}/Microsoft/UserSecrets:/root/.microsoft/usersecrets:ro
+      - ${APPDATA}/ASP.NET/Https:/root/.aspnet/https:ro
+      
+ 
+  # Database
+  db:
+    container_name: library-db
+    image: postgres:16
+    hostname: db
+    env_file:
+      - database.env
+    ports:
+      - "15442:5432"
+    volumes:
+      - database-data:/var/lib/postgresql/data/
+
+volumes:
+  database-data: {}
+  metrics-data: {}
+  loki-data: {}
